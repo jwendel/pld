@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"reflect"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -76,7 +77,9 @@ func PingHost(address string, timeout time.Duration) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to listen for ICMP packets: %w", err)
 	}
-	defer conn.Close()
+	defer func(conn *icmp.PacketConn) {
+		_ = conn.Close()
+	}(conn)
 
 	// Construct the ICMP message (Echo Request).
 	// Using the process ID for the ICMP ID is a common practice to help
@@ -145,21 +148,41 @@ func PingHost(address string, timeout time.Duration) (bool, error) {
 			if ie.ID != packetId {
 				log.Printf("Got echo_reply not matching our Id.  ignoring. rm:[%+v] peer:[%+v] ie:[%+v]", receivedMsg, peer, ie)
 			}
-			log.Printf("happy reply. rm:[%+v] peer:[%+v] ie:[%+v]", receivedMsg, peer, ie)
+			log.Printf("happy reply. rm:[%+v] peer:[%+v] ie:[%+v]", receivedMsg.Body, peer, ie)
 		default:
-			log.Printf("Unexpected ICMP response type: %+v", ie)
+			log.Printf("Unexpected ICMP response ie:%+v, body:%+v", ie, receivedMsg.Body)
 		}
 		log.Printf("Received ICMP after %v reply from %s: %v", pingTime, peer, receivedMsg)
 		return true, nil // Successfully received an echo reply.
 	case ipv4.ICMPTypeTimeExceeded:
+
 		switch ie := receivedMsg.Body.(type) {
 		case *icmp.Echo:
 			if ie.ID != packetId {
 				log.Printf("Got echo_reply not matching our Id.  ignoring. rm:[%+v] peer:[%+v] ie:[%+v]", receivedMsg, peer, ie)
 			}
-			log.Printf("happy reply. rm:[%+v] peer:[%+v] ie:[%+v]", receivedMsg, peer, ie)
+			log.Printf("time exceeded echo. rm:[%+v] peer:[%+v] ie:[%+v]", receivedMsg, peer, ie)
+		case *icmp.TimeExceeded:
+			if len(ie.Data) < ipv4.HeaderLen {
+				return false, fmt.Errorf("TimeExceeded data is too short (got %d bytes, need at least %d) to contain an IPv4 header", len(ie.Data), ipv4.HeaderLen)
+			}
+
+			originalIPHeader, err := ipv4.ParseHeader(ie.Data)
+			if err != nil {
+				return false, fmt.Errorf("failed to parse original IPv4 header from TimeExceeded data: %w", err)
+			}
+
+			var originalPayload []byte
+			if len(ie.Data) > originalIPHeader.Len {
+				originalPayload = ie.Data[originalIPHeader.Len:]
+			} else {
+				originalPayload = []byte{}
+			}
+			// TODO: lets compare either the ID from the OH or body of the OP to what was originally sent
+
+			log.Printf("time exceeded ExtendedEchoReply. rm:[%+v] peer:[%+v] ie:[%+v], oh:[%+v] op:[%+v]", receivedMsg, peer, ie, originalIPHeader, originalPayload)
 		default:
-			log.Printf("Unexpected ICMP response type: %+v", ie)
+			log.Printf("Unexpected ICMP response type:%+v", reflect.TypeOf(receivedMsg.Body))
 		}
 		return false, fmt.Errorf("time exceeded in %v from %s, message %+v", pingTime, peer, receivedMsg)
 	default:
