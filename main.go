@@ -91,7 +91,7 @@ func PingHost(address string, timeout time.Duration) (bool, error) {
 		Code: 0,                 // Code 0 for Echo Request
 		Body: &icmp.Echo{
 			ID:   packetId,       // Use process ID (masked to 16 bits)
-			Seq:  1,              // Sequence number (can be incremented for multiple pings)
+			Seq:  33,             // Sequence number (can be incremented for multiple pings)
 			Data: []byte("PING"), // Arbitrary payload
 		},
 	}
@@ -178,9 +178,13 @@ func PingHost(address string, timeout time.Duration) (bool, error) {
 			} else {
 				originalPayload = []byte{}
 			}
+
+			parsedinner, err := icmp.ParseMessage(ipv4.ICMPTypeEcho.Protocol(), originalPayload)
+
 			// TODO: lets compare either the ID from the OH or body of the OP to what was originally sent
 
 			log.Printf("time exceeded ExtendedEchoReply. rm:[%+v] peer:[%+v] ie:[%+v], oh:[%+v] op:[%+v]", receivedMsg, peer, ie, originalIPHeader, originalPayload)
+			log.Fatalf("parsedinner[%+v] body[%+v]", parsedinner, parsedinner.Body)
 		default:
 			log.Printf("Unexpected ICMP response type:%+v", reflect.TypeOf(receivedMsg.Body))
 		}
