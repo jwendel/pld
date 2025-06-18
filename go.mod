@@ -3,6 +3,7 @@ module github.com/jwendel/pld
 go 1.25rc1
 
 require (
+	github.com/spf13/pflag v1.0.6
 	golang.org/x/net v0.41.0
 	modernc.org/sqlite v1.38.0
 )

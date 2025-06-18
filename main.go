@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"github.com/spf13/pflag"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"log"
@@ -15,6 +17,32 @@ import (
 )
 
 func main() {
+	ttl := pflag.Int("ttl", 64, "ttl for ping")
+	timeout := pflag.Duration("timeout", 1*time.Second, "ping timeout")
+	pflag.Parse()
+
+	//connectToDb()
+
+	targetHost := "google.com" // Or an IP like "8.8.8.8"
+
+	log.Printf("Pinging %s (IPv4) timeout=%v ttl=%v...\n", targetHost, *timeout, *ttl)
+	success, err := PingHost(targetHost, *timeout, *ttl)
+
+	if err != nil {
+		// This covers errors like resolution failure, listen failure, etc.
+		log.Fatalf("Ping process failed: %v\n", err)
+	}
+
+	if !success {
+		//log.Printf("Ping to %s successful!\n", targetHost)
+		//} else {
+		// This indicates a timeout (no reply within the duration).
+		log.Printf("Ping to %s timed out or no reply received.\n", targetHost)
+	}
+
+}
+
+func connectToDb() {
 	// Open a connection to the SQLite database.
 	// The database file "mydatabase.db" will be created if it doesn't exist.
 	db, err := sql.Open("sqlite", "mydatabase.db")
@@ -41,28 +69,9 @@ func main() {
 	// 	log.Fatalf("Failed to create table: %v", err)
 	// }
 	// log.Println("Table 'users' checked/created successfully.")
-
-	targetHost := "google.com" // Or an IP like "8.8.8.8"
-	timeout := 1 * time.Second
-
-	log.Printf("Pinging %s (IPv4) with timeout %v...\n", targetHost, timeout)
-	success, err := PingHost(targetHost, timeout)
-
-	if err != nil {
-		// This covers errors like resolution failure, listen failure, etc.
-		log.Fatalf("Ping process failed: %v\n", err)
-	}
-
-	if success {
-		log.Printf("Ping to %s successful!\n", targetHost)
-	} else {
-		// This indicates a timeout (no reply within the duration).
-		log.Printf("Ping to %s timed out or no reply received.\n", targetHost)
-	}
-
 }
 
-func PingHost(address string, timeout time.Duration) (bool, error) {
+func PingHost(address string, timeout time.Duration, ttl int) (bool, error) {
 	// Resolve the address to an IPAddr. We're focusing on IPv4.
 	// For IPv6, you would use "ip6" and corresponding ipv6.ICMPType* constants.
 	ipAddr, err := net.ResolveIPAddr("ip4", address)
@@ -101,10 +110,18 @@ func PingHost(address string, timeout time.Duration) (bool, error) {
 		return false, fmt.Errorf("failed to marshal ICMP message: %w", err)
 	}
 
-	err = conn.IPv4PacketConn().SetTTL(3)
+	err = conn.IPv4PacketConn().SetTTL(ttl)
 	if err != nil {
 		return false, fmt.Errorf("failed to set TTL: %w", err)
 	}
+
+	// Set a deadline for reading the reply.
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return false, fmt.Errorf("failed to set read deadline: %w", err)
+	}
+	// Buffer to hold the ICMP reply.
+	// 1500 bytes is a common MTU size and should be sufficient for an ICMP reply.
+	replyBytes := make([]byte, 1500)
 
 	// Send the ICMP message to the target IP address.
 	startTime := time.Now()
@@ -112,19 +129,12 @@ func PingHost(address string, timeout time.Duration) (bool, error) {
 		return false, fmt.Errorf("failed to write ICMP message to %s: %w", ipAddr, err)
 	}
 
-	// Set a deadline for reading the reply.
-	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return false, fmt.Errorf("failed to set read deadline: %w", err)
-	}
-
-	// Buffer to hold the ICMP reply.
-	// 1500 bytes is a common MTU size and should be sufficient for an ICMP reply.
-	replyBytes := make([]byte, 1500)
 	n, peer, err := conn.ReadFrom(replyBytes)
 	pingTime := time.Now().Sub(startTime)
 	if err != nil {
 		// Check if the error is a timeout.
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
 			return false, nil // Timeout occurred, not a "failure" error.
 		}
 		return false, fmt.Errorf("failed to read ICMP reply from %s after %v: %w", ipAddr, pingTime, err)
